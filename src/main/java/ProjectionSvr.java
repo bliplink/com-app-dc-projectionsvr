@@ -20,6 +20,7 @@ public class ProjectionSvr {
             ServerGwWrapper.Start(ProjectionSvr.class, "./config/application.properties", args);
         } catch (Exception e) {
             logger.error("ProjectionSvr start error", e);
+            throw e;
         }
     }
 }
