@@ -34,7 +34,7 @@ jobs:
 
       - name: Clone common repo
         run: |
-          git clone --branch "${COMMON_BRANCH}" "https://${COMMON_REPO}" /tmp/com.app.dc
+          git clone --branch "${COMMON_BRANCH}" "https://x-access-token:${{ secrets.GH_REPO_TOKEN }}@${COMMON_REPO}" /tmp/com.app.dc
 
       - name: Build common package
         working-directory: /tmp/com.app.dc
