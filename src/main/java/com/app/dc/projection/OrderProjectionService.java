@@ -300,7 +300,7 @@ public class OrderProjectionService {
                 text(value, "timeInForce"), text(value, "OCType", "oCType"), text(value, "positionSide"),
                 bool(value, "reduceOnly") ? 1 : 0, value.get("price"), value.get("qty"),
                 text(value, "orderStatus"), text(value, "rejCode"), text(value, "rejReason"),
-                value.get("unCumQty"), value.get("cumQty"), value.get("takeProfitPrice"),
+                raw(value, "unOpenQty", "unCumQty"), value.get("cumQty"), value.get("takeProfitPrice"),
                 value.get("stopLossPrice"), text(value, "triggerType"), value.get("triggerPrice"),
                 text(value, "trigger"), text(value, "createtime"), text(value, "updateTime"),
                 text(value, "closeBy"), text(value, "location"), text(value, "transactTime"),
@@ -336,6 +336,16 @@ public class OrderProjectionService {
             Object raw = value.get(key);
             if (raw != null) {
                 return String.valueOf(raw);
+            }
+        }
+        return null;
+    }
+
+    private Object raw(JSONObject value, String... keys) {
+        for (String key : keys) {
+            Object raw = value.get(key);
+            if (raw != null) {
+                return raw;
             }
         }
         return null;
