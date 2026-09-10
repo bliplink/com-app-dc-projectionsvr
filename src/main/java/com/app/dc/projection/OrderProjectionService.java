@@ -217,9 +217,7 @@ public class OrderProjectionService {
             return current;
         }
         if (current.epoch != previousEpoch || current.seq != previousSeq) {
-            throw new IllegalStateException("projection sequence mismatch partition=" + partitionId
-                    + ", current=" + current + ", expected=" + previousEpoch + ":" + previousSeq
-                    + ", incoming=" + epoch + ":" + seq);
+            throw new SequenceMismatchException(partitionId, current, previousEpoch, previousSeq, epoch, seq);
         }
 
         int inserted = DBUtils.update("INSERT IGNORE INTO dc_order_projection_event "
@@ -376,6 +374,26 @@ public class OrderProjectionService {
         }
 
         @Override public String toString() { return epoch + ":" + seq; }
+    }
+
+    /**
+     * Explicit negative acknowledgement for a missing/out-of-order projection
+     * event. The transaction is rolled back, while the durable receiver watermark
+     * is returned to OrderSvr so it can replay from the gap without polling MySQL.
+     */
+    public static final class SequenceMismatchException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+        public final String partitionId;
+        public final Watermark current;
+
+        public SequenceMismatchException(String partitionId, Watermark current, long previousEpoch,
+                long previousSeq, long incomingEpoch, long incomingSeq) {
+            super("projection sequence mismatch partition=" + partitionId
+                    + ", current=" + current + ", expected=" + previousEpoch + ":" + previousSeq
+                    + ", incoming=" + incomingEpoch + ":" + incomingSeq);
+            this.partitionId = partitionId;
+            this.current = current;
+        }
     }
 
     public static final class HistoryResult {
