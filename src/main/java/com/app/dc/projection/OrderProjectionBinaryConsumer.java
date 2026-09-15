@@ -146,6 +146,9 @@ public class OrderProjectionBinaryConsumer implements CommandLineRunner, IMessag
             return;
         }
         PartitionState state = state(batch.getPartitionId());
+        if (state.mode == Mode.BLOCKED) {
+            return;
+        }
         try {
             ensureWatermark(state);
             if (OrderProjectionSequence.alreadyApplied(state.watermark.epoch, state.watermark.seq, batch)) {
@@ -175,7 +178,7 @@ public class OrderProjectionBinaryConsumer implements CommandLineRunner, IMessag
     }
 
     private void requestGap(PartitionState state) {
-        if (!running || state.fetchInFlight || state.mode == Mode.REBASE_REQUIRED) {
+        if (!running || state.fetchInFlight || state.mode == Mode.REBASE_REQUIRED || state.mode == Mode.BLOCKED) {
             return;
         }
         try {
@@ -218,6 +221,12 @@ public class OrderProjectionBinaryConsumer implements CommandLineRunner, IMessag
                 log.error("PROJECTION_REBASE_REQUIRED partition:{}, watermark:{}, baselineSeq:{}, committedHigh:{}",
                         state.partitionId, state.watermark, response.getBaselineSeq(),
                         response.getCommittedHighWatermark());
+                return;
+            case EVENT_TOO_LARGE:
+                state.mode = Mode.BLOCKED;
+                state.buffered.clear();
+                log.error("PROJECTION_PARTITION_BLOCKED partition:{}, watermark:{}, reason:{}",
+                        state.partitionId, state.watermark, response.getMessage());
                 return;
             case NOT_PRIMARY:
             case STALE_EPOCH:
@@ -322,7 +331,7 @@ public class OrderProjectionBinaryConsumer implements CommandLineRunner, IMessag
             final String partitionId = assignment.getPartitionId();
             submit(partitionId, () -> {
                 PartitionState state = state(partitionId);
-                if (state.mode == Mode.REBASE_REQUIRED || state.fetchInFlight) {
+                if (state.mode == Mode.REBASE_REQUIRED || state.mode == Mode.BLOCKED || state.fetchInFlight) {
                     return;
                 }
                 try {
@@ -365,7 +374,7 @@ public class OrderProjectionBinaryConsumer implements CommandLineRunner, IMessag
     private void scheduleRetry(PartitionState state, Exception error) {
         log.warn("Projection GAP retry partition:{}, watermark:{}", state.partitionId, state.watermark, error);
         ScheduledExecutorService current = scheduler;
-        if (current != null && running && state.mode != Mode.REBASE_REQUIRED) {
+        if (current != null && running && state.mode != Mode.REBASE_REQUIRED && state.mode != Mode.BLOCKED) {
             current.schedule(() -> submit(state.partitionId, () -> requestGap(state)), retryMs, TimeUnit.MILLISECONDS);
         }
     }
@@ -406,7 +415,8 @@ public class OrderProjectionBinaryConsumer implements CommandLineRunner, IMessag
     private enum Mode {
         RUNNING,
         GAP_RECOVERING,
-        REBASE_REQUIRED
+        REBASE_REQUIRED,
+        BLOCKED
     }
 
     private static final class PartitionState {
