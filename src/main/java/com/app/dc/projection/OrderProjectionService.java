@@ -1,5 +1,6 @@
 package com.app.dc.projection;
 
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.List;
@@ -13,6 +14,9 @@ import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.app.common.db.DBUtils;
 import com.app.dc.fix.message.ExecutionReport;
+import com.app.dc.projection.wire.OrderProjectionWireBatch;
+import com.app.dc.projection.wire.OrderProjectionWireEvent;
+import com.app.dc.projection.wire.OrderProjectionWireProtocol;
 
 /** Transactional, idempotent MySQL projection of committed OrderSvr events. */
 @Component
@@ -34,6 +38,7 @@ public class OrderProjectionService {
     @Value("${projection.saveDemo:false}")
     private boolean saveDemo;
 
+    /** Legacy JSON batch entry kept during migration. */
     public Watermark applyBatch(String content) throws Exception {
         JSONArray events = JSON.parseArray(content);
         if (events == null || events.isEmpty()) {
@@ -49,6 +54,40 @@ public class OrderProjectionService {
             Watermark result = null;
             for (int i = 0; i < events.size(); i++) {
                 result = applyEvent(events.getJSONObject(i), connection);
+            }
+            connection.commit();
+            return result == null ? Watermark.EMPTY : result;
+        } catch (Exception e) {
+            try { connection.rollback(); } catch (Exception ignored) { }
+            throw e;
+        } finally {
+            try { connection.setAutoCommit(true); } catch (Exception ignored) { }
+            DBUtils.getDatabaseConnection().freeConnection(connection);
+        }
+    }
+
+    /**
+     * Native binary-stream entry. The wire envelope is not converted to JSON;
+     * only the CQ mutation payload, which is already JSON at source, is parsed.
+     */
+    public Watermark applyWireBatch(OrderProjectionWireBatch batch) throws Exception {
+        if (batch == null || batch.getEvents() == null || batch.getEvents().isEmpty()) {
+            throw new IllegalArgumentException("projection wire batch is empty");
+        }
+        if (batch.getEvents().size() > 500) {
+            throw new IllegalArgumentException("projection wire batch exceeds 500");
+        }
+        requireText(batch.getPartitionId(), "partitionId");
+
+        Connection connection = requireConnection();
+        try {
+            connection.setAutoCommit(false);
+            Watermark result = null;
+            for (OrderProjectionWireEvent event : batch.getEvents()) {
+                if (event == null || !batch.getPartitionId().equals(event.getPartitionId())) {
+                    throw new IllegalArgumentException("projection wire batch crosses partitions");
+                }
+                result = applyWireEvent(event, connection);
             }
             connection.commit();
             return result == null ? Watermark.EMPTY : result;
@@ -202,13 +241,31 @@ public class OrderProjectionService {
 
     private Watermark applyEvent(JSONObject event, Connection connection) throws Exception {
         validateEnvelope(event);
-        String eventId = event.getString("eventId");
-        String partitionId = event.getString("partitionId");
-        long epoch = event.getLongValue("epoch");
-        long seq = event.getLongValue("journalSeq");
-        long previousEpoch = event.getLongValue("previousEpoch");
-        long previousSeq = event.getLongValue("previousSeq");
+        return applyValues(event.getString("eventId"), event.getString("partitionId"),
+                event.getLongValue("epoch"), event.getLongValue("journalSeq"),
+                event.getString("eventType"), event.getString("sourceNode"),
+                event.getLongValue("eventTimestamp"), event.getLongValue("previousEpoch"),
+                event.getLongValue("previousSeq"), event.getString("payload"), connection);
+    }
 
+    private Watermark applyWireEvent(OrderProjectionWireEvent event, Connection connection) throws Exception {
+        if (event.getVersion() != OrderProjectionWireProtocol.VERSION) {
+            throw new IllegalArgumentException("unsupported projection wire event version");
+        }
+        requireText(event.getEventId(), "eventId");
+        requireText(event.getPartitionId(), "partitionId");
+        requireText(event.getEventType(), "eventType");
+        if (event.getEpoch() <= 0L || event.getJournalSeq() <= 0L || event.getPayload() == null) {
+            throw new IllegalArgumentException("invalid projection wire event");
+        }
+        return applyValues(event.getEventId(), event.getPartitionId(), event.getEpoch(), event.getJournalSeq(),
+                event.getEventType(), event.getSourceNode(), event.getEventTimestamp(), event.getPreviousEpoch(),
+                event.getPreviousSeq(), new String(event.getPayload(), StandardCharsets.UTF_8), connection);
+    }
+
+    private Watermark applyValues(String eventId, String partitionId, long epoch, long seq, String eventType,
+            String sourceNode, long eventTimestamp, long previousEpoch, long previousSeq, String payload,
+            Connection connection) throws Exception {
         DBUtils.update("INSERT IGNORE INTO dc_order_projection_watermark "
                 + "(partition_id,source_epoch,journal_seq,update_time) VALUES (?,0,0,NOW(3))",
                 new Object[] { partitionId }, connection);
@@ -223,14 +280,13 @@ public class OrderProjectionService {
         int inserted = DBUtils.update("INSERT IGNORE INTO dc_order_projection_event "
                 + "(event_id,partition_id,source_epoch,journal_seq,event_type,source_node,event_time,payload,create_time) "
                 + "VALUES (?,?,?,?,?,?,?,?,NOW(3))",
-                new Object[] { eventId, partitionId, epoch, seq, event.getString("eventType"),
-                        event.getString("sourceNode"), event.getLongValue("eventTimestamp"),
-                        event.getString("payload") }, connection);
+                new Object[] { eventId, partitionId, epoch, seq, eventType, sourceNode, eventTimestamp, payload },
+                connection);
         if (inserted != 1) {
             throw new IllegalStateException("projection event exists ahead of watermark: " + eventId);
         }
 
-        JSONObject mutation = JSON.parseObject(event.getString("payload"));
+        JSONObject mutation = JSON.parseObject(payload);
         JSONObject order = mutation == null ? null : mutation.getJSONObject("order");
         if (order == null) {
             throw new IllegalArgumentException("projection mutation has no final order image: " + eventId);
