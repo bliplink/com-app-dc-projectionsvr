@@ -13,7 +13,7 @@
 		<dependency>
 			<groupId>com.app.dc</groupId>
 			<artifactId>com.app.dc</artifactId>
-			<version>0.0.3-SNAPSHOT</version>
+			<version>0.0.4-SNAPSHOT</version>
 		</dependency>
 		<dependency>
 			<groupId>junit</groupId>
