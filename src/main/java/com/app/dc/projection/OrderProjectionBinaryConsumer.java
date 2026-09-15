@@ -10,6 +10,8 @@ import java.util.concurrent.TimeUnit;
 
 import javax.annotation.PreDestroy;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
@@ -32,18 +34,17 @@ import com.gateway.connector.tcp.client.PRspCallBack;
 import com.gw.common.utils.GwClientResource;
 import com.gw.common.utils.GwClientWrapper;
 
-import lombok.extern.slf4j.Slf4j;
-
 /**
  * Consumer-owned Projection stream.
  *
  * Realtime committed mutations are pushed by OrderSvr, while any missing range
  * is pulled from the current partition Primary using the durable MySQL watermark.
  */
-@Slf4j
 @Component
 @ConditionalOnProperty(name = "projection.binary.enabled", havingValue = "true")
 public class OrderProjectionBinaryConsumer implements CommandLineRunner, IMessageByte {
+    private static final Logger log = LoggerFactory.getLogger(OrderProjectionBinaryConsumer.class);
+
     @Autowired
     private GwClientResource gwClientResource;
     @Autowired
